@@ -1,0 +1,54 @@
+# Neo4j i MongoDB s IDENTICNIM resursnim ogranicenjima (mem_limit, cpus).
+# Ovo je preduvjet iz CLAUDE.md pravila - bez toga bi usporedba brzine
+# mogla samo mjeriti "koja baza je dobila vise resursa", ne "koji je engine
+# brzi pri istim resursima".
+services:
+  neo4j:
+    image: neo4j:5.24-community
+    container_name: benchmark-neo4j
+    ports:
+      - "7474:7474" # web konzola (Neo4j Browser), korisno za rucnu provjeru
+      - "7687:7687" # bolt protokol - ovo koristi Neo4j.Driver iz C# aplikacije
+    environment:
+      - NEO4J_AUTH=neo4j/benchmarkpassword
+      # NAPOMENA: mem_limit dolje ogranicava kontejner IZVANA, ali ne govori
+      # Neo4jevom JVM-u koliko smije zauzeti - to je namjerno neregulirano u
+      # ovoj verziji projekta (v. OGRANICENJA.md, obje baze koriste tvornicke
+      # heuristike unutar mem_limit-a).
+    mem_limit: 2g
+    cpus: 2
+
+  mongo:
+    image: mongo:7.0
+    container_name: benchmark-mongo
+    ports:
+      - "27017:27017"
+    mem_limit: 2g
+    cpus: 2
+
+  # Web UI (Faza 4-6 plana) - treci servis, DODAN, "neo4j" i "mongo" iznad
+  # ostaju bajt-po-bajt nepromijenjeni (njihova identicnost resursa je
+  # dokumentirana premisa seminara, v. CLAUDE.md).
+  app:
+    build: .
+    ports:
+      # "127.0.0.1:8080:8080", NE "8080:8080" - servis se NE smije izlagati
+      # izvan localhosta (Faza 5 plana - slobodan unos upita izvrsava upite
+      # protiv stvarnih baza, makar read-only, pa vanjski pristup nije
+      # prihvatljiv rizik).
+      - "127.0.0.1:8080:8080"
+    environment:
+      # Dvostruka podvlaka je ASP.NET Core konvencija za ugnijezdene
+      # konfiguracijske kljuceve (Neo4j:Uri, Mongo:ConnectionString u
+      # appsettings.json) - zato Program.cs ima .AddEnvironmentVariables().
+      # Imena servisa ("neo4j","mongo"), NE "localhost" - unutar Docker
+      # mreze "localhost" je sam "app" spremnik, ne baze.
+      - Neo4j__Uri=bolt://neo4j:7687
+      - Mongo__ConnectionString=mongodb://mongo:27017
+    volumes:
+      # Bind-mount je case-sensitive UNUTAR Linux spremnika - na disku je
+      # folder "BenchmarkApp/Data/raw" (veliko D), ali Program.cs gradi
+      # putanju s malim "data" - zato se ovdje EKSPLICITNO mapira na
+      # "/app/data/raw" (malo d), da se poklopi s onim sto kod trazi.
+      - ./Data/raw:/app/data/raw:ro
+    depends_on: [neo4j, mongo]
