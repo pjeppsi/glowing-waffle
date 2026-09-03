@@ -45,6 +45,18 @@
   .rawresult { margin-top: 10px; }
   .err { color: var(--bad); }
   .ok-text { color: var(--ok); }
+
+  /* --- grafovi --- */
+  .charts { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  @media (max-width: 1000px) { .charts { grid-template-columns: 1fr; } }
+  .chartbox { background: var(--panel2); border: 1px solid var(--border); border-radius: 8px; padding: 12px; }
+  .chartbox h3 { margin: 0 0 2px; font-size: .92rem; }
+  .chartbox .hint { color: var(--muted); font-size: .75rem; margin: 0 0 8px; }
+  .chartbox svg { width: 100%; height: auto; display: block; }
+  .legend { display: flex; gap: 14px; flex-wrap: wrap; margin-top: 10px; font-size: .8rem; }
+  .legend span { display: flex; align-items: center; gap: 6px; color: var(--muted); }
+  .swatch { width: 12px; height: 12px; border-radius: 3px; display: inline-block; }
+  .progress { color: var(--muted); font-size: .85rem; margin: 8px 0; }
 </style>
 </head>
 <body>
@@ -110,6 +122,27 @@
 </div>
 
 <div class="card">
+  <h2>Grafovi brzine — svih pet upita odjednom</h2>
+  <div class="warn">
+    Ovi grafovi crtaju mjerenja izvedena <b>iz ovog spremnika</b>, koji se natječe za CPU sa spremnicima
+    baza. Međusobni omjeri triju varijanti su valjani (mjere se naizmjenično, pod istim uvjetima), ali
+    apsolutne vrijednosti nisu usporedive s mjerodavnim brojkama iz <code>results/summary.md</code>,
+    koje nastaju naredbom <code>bench</code> na hostu.
+  </div>
+  <div class="row">
+    <label for="chartSubjectPick">Subjekt (Q1–Q4)</label>
+    <select id="chartSubjectPick"></select>
+    <label for="chartPairPick">Par (Q5)</label>
+    <select id="chartPairPick"></select>
+    <label for="chartIterations">Broj mjerenja</label>
+    <input id="chartIterations" type="number" min="1" max="50" value="10" style="width:70px">
+    <button id="chartBtn">Izmjeri Q1–Q5 i nacrtaj</button>
+  </div>
+  <div id="chartProgress" class="progress"></div>
+  <div id="chartOut"></div>
+</div>
+
+<div class="card">
   <h2>Slobodan unos upita</h2>
   <div class="warn">
     Ovaj alat je namjerno READ-ONLY, provedeno od strane baze same, ne samo provjerom teksta: Cypher se
@@ -139,10 +172,10 @@ async function loadSubjects() {
   subjects = data.subjects;
   pairs = data.pairs;
 
-  for (const sel of [document.getElementById('subjectPick'), document.getElementById('benchSubjectPick')]) {
+  for (const sel of [document.getElementById('subjectPick'), document.getElementById('benchSubjectPick'), document.getElementById('chartSubjectPick')]) {
     sel.innerHTML = subjects.map(s => `<option value="${s}">${s}</option>`).join('');
   }
-  for (const sel of [document.getElementById('pairPick'), document.getElementById('benchPairPick')]) {
+  for (const sel of [document.getElementById('pairPick'), document.getElementById('benchPairPick'), document.getElementById('chartPairPick')]) {
     sel.innerHTML = pairs.map(p => `<option value="${p.fromId}|${p.toId}">${p.fromId} → ${p.toId} (očekivano ${p.expectedLength})</option>`).join('');
   }
 }
@@ -250,6 +283,178 @@ document.getElementById('rawBtn').addEventListener('click', async () => {
     } else {
       document.getElementById('rawOut').innerHTML = `<p class="ok-text">✓ ${data.rowCount} redaka</p><pre>${escapeHtml(renderRows(data.rows))}</pre>`;
     }
+  } finally {
+    btn.disabled = false;
+  }
+});
+
+// ---------------- Grafovi ----------------
+// Sve je rucno crtan inline SVG, bez ijedne vanjske biblioteke - da sucelje
+// radi i kad spremnik nema pristup internetu (npr. na obrani seminara).
+
+const QUERIES = ['Q1', 'Q2', 'Q3', 'Q4', 'Q5'];
+const QUERY_LABELS = { Q1: 'Q1 profil', Q2: 'Q2 pratitelji', Q3: 'Q3 fof', Q4: 'Q4 feed', Q5: 'Q5 put' };
+const VARIANT_COLORS = { 'neo4j': '#5b9dff', 'mongo': '#ef8b5b', 'mongo-raw': '#35c47a' };
+
+function variantColor(name) { return VARIANT_COLORS[name] || '#93a0bd'; }
+
+// Radar ("pokemon") graf: 5 osi = 5 upita, jedan poligon po varijanti.
+//
+// Os NIJE u milisekundama nego u RELATIVNOJ brzini: na svakoj osi se najbrza
+// varijanta racuna kao 1.0, a ostale kao (najbrzi / njihov medijan). Bez te
+// normalizacije graf bi bio neupotrebljiv - Q3 kod monga ide preko 40 ms, a
+// Q1 je oko 2 ms, pa bi na zajednickoj linearnoj skali Q1 i Q2 bili
+// nevidljivi. Veci poligon = brze, sto je i intuicija koju ovakav graf nosi.
+function radarChart(data) {
+  const size = 420, cx = size / 2, cy = size / 2 + 10, r = 140;
+  const n = QUERIES.length;
+  const angle = i => (Math.PI * 2 * i / n) - Math.PI / 2;
+  const pt = (i, frac) => [cx + Math.cos(angle(i)) * r * frac, cy + Math.sin(angle(i)) * r * frac];
+
+  // najbrzi (najmanji medijan) po upitu
+  const best = {};
+  for (const q of QUERIES) {
+    const vals = data[q].map(v => v.median).filter(v => v > 0);
+    best[q] = vals.length ? Math.min(...vals) : 1;
+  }
+
+  let svg = `<svg viewBox="0 0 ${size} ${size}" role="img" aria-label="Radar graf relativne brzine">`;
+
+  // mreza
+  for (const frac of [0.25, 0.5, 0.75, 1]) {
+    const pts = QUERIES.map((_, i) => pt(i, frac).join(',')).join(' ');
+    svg += `<polygon points="${pts}" fill="none" stroke="#2a3450" stroke-width="1"/>`;
+  }
+  QUERIES.forEach((_, i) => {
+    const [x, y] = pt(i, 1);
+    svg += `<line x1="${cx}" y1="${cy}" x2="${x}" y2="${y}" stroke="#2a3450" stroke-width="1"/>`;
+  });
+
+  // natpisi osi
+  QUERIES.forEach((q, i) => {
+    const [x, y] = pt(i, 1.16);
+    svg += `<text x="${x}" y="${y}" fill="#93a0bd" font-size="12" text-anchor="middle" dominant-baseline="middle">${QUERY_LABELS[q]}</text>`;
+  });
+
+  // poligon po varijanti
+  const variantNames = data[QUERIES[0]].map(v => v.name);
+  for (const name of variantNames) {
+    const pts = QUERIES.map((q, i) => {
+      const entry = data[q].find(v => v.name === name);
+      const frac = entry && entry.median > 0 ? Math.max(0.04, best[q] / entry.median) : 0.04;
+      return pt(i, frac).join(',');
+    }).join(' ');
+    const c = variantColor(name);
+    svg += `<polygon points="${pts}" fill="${c}" fill-opacity="0.16" stroke="${c}" stroke-width="2"/>`;
+    QUERIES.forEach((q, i) => {
+      const entry = data[q].find(v => v.name === name);
+      const frac = entry && entry.median > 0 ? Math.max(0.04, best[q] / entry.median) : 0.04;
+      const [x, y] = pt(i, frac);
+      svg += `<circle cx="${x}" cy="${y}" r="3" fill="${c}"/>`;
+    });
+  }
+
+  svg += `</svg>`;
+  return svg;
+}
+
+// Stupcasti graf: apsolutni medijani u ms, zajednicka linearna skala.
+// Ovdje NEMA normalizacije - namjerno, jer se bas na zajednickoj skali vidi
+// koliko Q3 kod programatske mongo varijante odskace od svega ostalog.
+function barChart(data) {
+  const w = 460, rowH = 74, padL = 76, padR = 56, top = 14;
+  const h = top + QUERIES.length * rowH;
+  const variantNames = data[QUERIES[0]].map(v => v.name);
+  const maxVal = Math.max(...QUERIES.flatMap(q => data[q].map(v => v.median)), 1);
+  const barW = w - padL - padR;
+
+  let svg = `<svg viewBox="0 0 ${w} ${h}" role="img" aria-label="Stupcasti graf medijana u milisekundama">`;
+  QUERIES.forEach((q, qi) => {
+    const y0 = top + qi * rowH;
+    svg += `<text x="0" y="${y0 + 16}" fill="#e6e9f2" font-size="12" font-weight="600">${QUERY_LABELS[q]}</text>`;
+    variantNames.forEach((name, vi) => {
+      const entry = data[q].find(v => v.name === name);
+      const val = entry ? entry.median : 0;
+      const bw = Math.max(2, (val / maxVal) * barW);
+      const y = y0 + 20 + vi * 15;
+      const c = variantColor(name);
+      svg += `<rect x="${padL}" y="${y}" width="${bw}" height="11" rx="3" fill="${c}"/>`;
+      svg += `<text x="${padL + bw + 6}" y="${y + 9}" fill="#93a0bd" font-size="11">${val.toFixed(2)}</text>`;
+    });
+  });
+  svg += `</svg>`;
+  return svg;
+}
+
+function legend(names) {
+  return `<div class="legend">${names.map(n =>
+    `<span><i class="swatch" style="background:${variantColor(n)}"></i>${n}</span>`).join('')}</div>`;
+}
+
+function chartTable(data) {
+  const variantNames = data[QUERIES[0]].map(v => v.name);
+  let html = '<table class="benchtable"><tr><th>Upit</th>' +
+    variantNames.map(n => `<th>${n}</th>`).join('') + '<th>najbrži</th></tr>';
+  for (const q of QUERIES) {
+    const entries = variantNames.map(n => data[q].find(v => v.name === n));
+    const min = Math.min(...entries.map(e => e ? e.median : Infinity));
+    const winner = entries.find(e => e && e.median === min);
+    html += `<tr><td>${QUERY_LABELS[q]}</td>` +
+      entries.map(e => `<td${e && e.median === min ? ' style="color:#35c47a;font-weight:600"' : ''}>${e ? e.median.toFixed(2) : '-'}</td>`).join('') +
+      `<td>${winner ? winner.name : '-'}</td></tr>`;
+  }
+  return html + '</table>';
+}
+
+document.getElementById('chartBtn').addEventListener('click', async () => {
+  const btn = document.getElementById('chartBtn');
+  const progress = document.getElementById('chartProgress');
+  const out = document.getElementById('chartOut');
+  const subject = document.getElementById('chartSubjectPick').value;
+  const [fromId, toId] = document.getElementById('chartPairPick').value.split('|');
+  const iterations = parseInt(document.getElementById('chartIterations').value, 10) || 10;
+
+  btn.disabled = true;
+  out.innerHTML = '';
+  const data = {};
+
+  try {
+    // Upiti idu SEKVENCIJALNO, nikad paralelno - paralelni pozivi bi se
+    // medusobno natjecali za iste baze i mjerili bi zagusenje, ne brzinu upita.
+    for (const q of QUERIES) {
+      progress.textContent = `Mjerim ${q}... (${iterations} mjerenja × 3 varijante)`;
+      const body = q === 'Q5'
+        ? { query: q, fromId, toId, iterations }
+        : { query: q, subject, iterations };
+      const res = await fetch('/api/bench', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body)
+      });
+      if (!res.ok) { throw new Error(`${q}: HTTP ${res.status}`); }
+      const json = await res.json();
+      data[q] = json.variants;
+    }
+
+    progress.textContent = `Gotovo — ${iterations} mjerenja po upitu i varijanti.`;
+    const names = data[QUERIES[0]].map(v => v.name);
+    out.innerHTML = `
+      <div class="charts">
+        <div class="chartbox">
+          <h3>Relativna brzina po upitu</h3>
+          <p class="hint">Na svakoj osi je najbrža varijanta 1,0. Veći poligon = brže.</p>
+          ${radarChart(data)}
+          ${legend(names)}
+        </div>
+        <div class="chartbox">
+          <h3>Medijan u milisekundama</h3>
+          <p class="hint">Zajednička skala za sve upite — manje je bolje.</p>
+          ${barChart(data)}
+          ${legend(names)}
+        </div>
+      </div>
+      <div style="margin-top:16px">${chartTable(data)}</div>`;
+  } catch (e) {
+    progress.textContent = '';
+    out.innerHTML = `<p class="err">Greška pri mjerenju: ${escapeHtml(String(e.message || e))}</p>`;
   } finally {
     btn.disabled = false;
   }
