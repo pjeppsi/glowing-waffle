@@ -1,0 +1,7 @@
+# obj/ nosi NuGet cache s WINDOWS putanjama (project.assets.json referencira
+# "C:\Program Files (x86)\..." fallback folder) - ako se to kopira u Linux
+# build image, "dotnet publish" puca s MSB4018 (ResolvePackageAssets ne moze
+# naci fallback folder koji na Linuxu ne postoji). bin/ je iz istog razloga
+# nepotreban - "dotnet restore" u Dockerfileu gradi svoj obj/ iznova.
+**/bin/
+**/obj/
