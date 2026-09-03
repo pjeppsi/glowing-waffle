@@ -57,6 +57,16 @@
   .legend span { display: flex; align-items: center; gap: 6px; color: var(--muted); }
   .swatch { width: 12px; height: 12px; border-radius: 3px; display: inline-block; }
   .progress { color: var(--muted); font-size: .85rem; margin: 8px 0; }
+  .spq { margin-bottom: 14px; }
+  .spq:last-child { margin-bottom: 0; }
+  .spq-title { font-size: .82rem; font-weight: 600; margin-bottom: 5px; }
+  .spq-row { display: grid; grid-template-columns: 78px 1fr 52px 66px; align-items: center; gap: 8px; margin-bottom: 3px; }
+  .spq-name { font-size: .75rem; color: var(--muted); }
+  .spq-track { background: #0b0f18; border-radius: 3px; height: 13px; overflow: hidden; }
+  .spq-bar { height: 100%; border-radius: 3px; }
+  .spq-val { font-size: .78rem; text-align: right; color: var(--muted); font-variant-numeric: tabular-nums; }
+  .spq-val.spq-best { color: var(--ok); font-weight: 600; }
+  .spq-ms { font-size: .75rem; text-align: right; color: var(--muted); font-variant-numeric: tabular-nums; }
 </style>
 </head>
 <body>
@@ -298,64 +308,44 @@ const VARIANT_COLORS = { 'neo4j': '#5b9dff', 'mongo': '#ef8b5b', 'mongo-raw': '#
 
 function variantColor(name) { return VARIANT_COLORS[name] || '#93a0bd'; }
 
-// Radar ("pokemon") graf: 5 osi = 5 upita, jedan poligon po varijanti.
+// Graf ubrzanja: po upitu, koliko je puta svaka varijanta sporija od
+// najbrze NA TOM upitu. Najbrza dobiva 1,00x i punu duljinu trake.
 //
-// Os NIJE u milisekundama nego u RELATIVNOJ brzini: na svakoj osi se najbrza
-// varijanta racuna kao 1.0, a ostale kao (najbrzi / njihov medijan). Bez te
-// normalizacije graf bi bio neupotrebljiv - Q3 kod monga ide preko 40 ms, a
-// Q1 je oko 2 ms, pa bi na zajednickoj linearnoj skali Q1 i Q2 bili
-// nevidljivi. Veci poligon = brze, sto je i intuicija koju ovakav graf nosi.
-function radarChart(data) {
-  const size = 420, cx = size / 2, cy = size / 2 + 10, r = 140;
-  const n = QUERIES.length;
-  const angle = i => (Math.PI * 2 * i / n) - Math.PI / 2;
-  const pt = (i, frac) => [cx + Math.cos(angle(i)) * r * frac, cy + Math.sin(angle(i)) * r * frac];
-
-  // najbrzi (najmanji medijan) po upitu
-  const best = {};
-  for (const q of QUERIES) {
-    const vals = data[q].map(v => v.median).filter(v => v > 0);
-    best[q] = vals.length ? Math.min(...vals) : 1;
-  }
-
-  let svg = `<svg viewBox="0 0 ${size} ${size}" role="img" aria-label="Radar graf relativne brzine">`;
-
-  // mreza
-  for (const frac of [0.25, 0.5, 0.75, 1]) {
-    const pts = QUERIES.map((_, i) => pt(i, frac).join(',')).join(' ');
-    svg += `<polygon points="${pts}" fill="none" stroke="#2a3450" stroke-width="1"/>`;
-  }
-  QUERIES.forEach((_, i) => {
-    const [x, y] = pt(i, 1);
-    svg += `<line x1="${cx}" y1="${cy}" x2="${x}" y2="${y}" stroke="#2a3450" stroke-width="1"/>`;
-  });
-
-  // natpisi osi
-  QUERIES.forEach((q, i) => {
-    const [x, y] = pt(i, 1.16);
-    svg += `<text x="${x}" y="${y}" fill="#93a0bd" font-size="12" text-anchor="middle" dominant-baseline="middle">${QUERY_LABELS[q]}</text>`;
-  });
-
-  // poligon po varijanti
+// Ovo je zamijenilo radar ("pokemon") graf, koji je za ove podatke bio
+// varljiv: normalizacija po osi prikovala bi najbrzu varijantu na rub svih
+// pet osi (mongo-raw je bio 1,00 na cetiri od pet), a omjeri bi istovremeno
+// ZBIJALI male razlike i PRETJERIVALI velike - Q3 (6% razlike) i Q4 (19%)
+// izgledali su kao preklopljeni poligoni, dok bi Q5 napravio ostar urez do
+// centra. Brojka "1,06x" nosi tu istu informaciju bez geometrijske obmane.
+function speedupChart(data) {
   const variantNames = data[QUERIES[0]].map(v => v.name);
-  for (const name of variantNames) {
-    const pts = QUERIES.map((q, i) => {
-      const entry = data[q].find(v => v.name === name);
-      const frac = entry && entry.median > 0 ? Math.max(0.04, best[q] / entry.median) : 0.04;
-      return pt(i, frac).join(',');
-    }).join(' ');
-    const c = variantColor(name);
-    svg += `<polygon points="${pts}" fill="${c}" fill-opacity="0.16" stroke="${c}" stroke-width="2"/>`;
-    QUERIES.forEach((q, i) => {
-      const entry = data[q].find(v => v.name === name);
-      const frac = entry && entry.median > 0 ? Math.max(0.04, best[q] / entry.median) : 0.04;
-      const [x, y] = pt(i, frac);
-      svg += `<circle cx="${x}" cy="${y}" r="3" fill="${c}"/>`;
-    });
-  }
+  let html = '';
 
-  svg += `</svg>`;
-  return svg;
+  for (const q of QUERIES) {
+    const entries = variantNames
+      .map(n => data[q].find(v => v.name === n))
+      .filter(Boolean)
+      .sort((a, b) => a.median - b.median); // najbrzi prvi
+
+    const best = entries.length ? entries[0].median : 1;
+    html += `<div class="spq"><div class="spq-title">${QUERY_LABELS[q]}</div>`;
+
+    for (const e of entries) {
+      const ratio = e.median > 0 ? e.median / best : 1;
+      const widthPct = Math.max(3, (best / e.median) * 100);
+      const c = variantColor(e.name);
+      const isBest = e === entries[0];
+      html += `
+        <div class="spq-row">
+          <div class="spq-name">${e.name}</div>
+          <div class="spq-track"><div class="spq-bar" style="width:${widthPct}%;background:${c}"></div></div>
+          <div class="spq-val${isBest ? ' spq-best' : ''}">${ratio.toFixed(2).replace('.', ',')}x</div>
+          <div class="spq-ms">${e.median.toFixed(2).replace('.', ',')} ms</div>
+        </div>`;
+    }
+    html += '</div>';
+  }
+  return html;
 }
 
 // Stupcasti graf: apsolutni medijani u ms, zajednicka linearna skala.
@@ -439,10 +429,9 @@ document.getElementById('chartBtn').addEventListener('click', async () => {
     out.innerHTML = `
       <div class="charts">
         <div class="chartbox">
-          <h3>Relativna brzina po upitu</h3>
-          <p class="hint">Na svakoj osi je najbrža varijanta 1,0. Veći poligon = brže.</p>
-          ${radarChart(data)}
-          ${legend(names)}
+          <h3>Koliko je puta sporije od najbrže</h3>
+          <p class="hint">Po upitu zasebno. Najbrža varijanta je 1,00x i ima punu traku.</p>
+          ${speedupChart(data)}
         </div>
         <div class="chartbox">
           <h3>Medijan u milisekundama</h3>
