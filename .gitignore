@@ -1,0 +1,6 @@
+# Build artefakti
+bin/
+obj/
+
+# Visual Studio
+.vs/

@@ -1,0 +1,261 @@
+<!doctype html>
+<html lang="hr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Neo4j vs MongoDB - usporedba upita</title>
+<style>
+  :root {
+    --bg: #0f1420; --panel: #171e2e; --panel2: #1e263a; --border: #2a3450;
+    --text: #e6e9f2; --muted: #93a0bd; --accent: #5b9dff; --ok: #35c47a; --bad: #ef5b5b;
+    --mono: 'Consolas', 'Cascadia Mono', monospace;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); font-family: system-ui, sans-serif; padding: 24px; }
+  h1 { font-size: 1.4rem; margin: 0 0 4px; }
+  .subtitle { color: var(--muted); margin: 0 0 20px; font-size: .9rem; }
+  .card { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 18px; margin-bottom: 20px; }
+  .card h2 { margin: 0 0 12px; font-size: 1.05rem; }
+  .row { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; margin-bottom: 12px; }
+  label { font-size: .85rem; color: var(--muted); margin-right: 4px; }
+  select, input, textarea, button {
+    background: var(--panel2); color: var(--text); border: 1px solid var(--border);
+    border-radius: 6px; padding: 7px 10px; font-size: .9rem; font-family: inherit;
+  }
+  textarea { width: 100%; font-family: var(--mono); min-height: 90px; resize: vertical; }
+  button { background: var(--accent); color: #fff; border: none; cursor: pointer; font-weight: 600; }
+  button:hover { filter: brightness(1.1); }
+  button:disabled { opacity: .5; cursor: default; }
+  .warn { background: #2a2010; border: 1px solid #6b5420; color: #e3c46a; padding: 8px 12px; border-radius: 6px; font-size: .82rem; margin-bottom: 12px; }
+  .matchbar { padding: 8px 12px; border-radius: 6px; font-weight: 600; margin-bottom: 14px; font-size: .9rem; }
+  .matchbar.ok { background: #0f2a1c; border: 1px solid #1f6b3f; color: var(--ok); }
+  .matchbar.bad { background: #2a1414; border: 1px solid #6b1f1f; color: var(--bad); }
+  .cols { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; }
+  @media (max-width: 900px) { .cols { grid-template-columns: 1fr; } }
+  .variant { background: var(--panel2); border: 1px solid var(--border); border-radius: 8px; padding: 12px; overflow: hidden; }
+  .variant h3 { margin: 0 0 6px; font-size: .95rem; }
+  .stat { color: var(--muted); font-size: .8rem; margin-bottom: 6px; }
+  .stat b { color: var(--text); }
+  pre { background: #0b0f18; border: 1px solid var(--border); border-radius: 6px; padding: 8px; font-size: .75rem;
+        overflow-x: auto; max-height: 260px; white-space: pre-wrap; word-break: break-word; margin: 6px 0; }
+  .note { color: #e3c46a; font-size: .78rem; margin: 6px 0; }
+  table.benchtable { width: 100%; border-collapse: collapse; font-size: .85rem; }
+  table.benchtable th, table.benchtable td { border: 1px solid var(--border); padding: 6px 8px; text-align: right; }
+  table.benchtable th:first-child, table.benchtable td:first-child { text-align: left; }
+  .rawresult { margin-top: 10px; }
+  .err { color: var(--bad); }
+  .ok-text { color: var(--ok); }
+</style>
+</head>
+<body>
+
+<h1>Neo4j vs MongoDB — usporedba upita</h1>
+<p class="subtitle">Društvena mreža, 10 000 korisnika. Tri varijante: <b>neo4j</b> (Cypher), <b>mongo</b> (programatski Builders&lt;T&gt;), <b>mongo-raw</b> (jedan aggregation pipeline).</p>
+
+<div class="card">
+  <h2>Usporedba upita Q1–Q5</h2>
+  <div class="row">
+    <label for="queryPick">Upit</label>
+    <select id="queryPick">
+      <option value="Q1">Q1 — profil korisnika</option>
+      <option value="Q2">Q2 — pratitelji</option>
+      <option value="Q3">Q3 — prijatelji prijatelja</option>
+      <option value="Q4">Q4 — feed</option>
+      <option value="Q5">Q5 — najkraći put</option>
+    </select>
+
+    <span id="subjectPickWrap">
+      <label for="subjectPick">Subjekt</label>
+      <select id="subjectPick"></select>
+    </span>
+
+    <span id="pairPickWrap" style="display:none">
+      <label for="pairPick">Par (from → to)</label>
+      <select id="pairPick"></select>
+    </span>
+
+    <button id="runBtn">Pokreni</button>
+  </div>
+
+  <div id="runMatchbar"></div>
+  <div id="runCols" class="cols"></div>
+</div>
+
+<div class="card">
+  <h2>Mini-benchmark na zahtjev</h2>
+  <div class="warn">
+    Mjerodavni brojevi za seminar su u <code>results/summary.md</code> (pokrenuto s hosta preko
+    <code>dotnet run -- bench</code>). Ovo mjerenje se izvršava IZ web spremnika, koji se natječe za CPU
+    s neo4j/mongo spremnicima — brojke ovdje NISU usporedive s onima na hostu.
+  </div>
+  <div class="row">
+    <label for="benchQueryPick">Upit</label>
+    <select id="benchQueryPick">
+      <option value="Q1">Q1</option><option value="Q2">Q2</option><option value="Q3">Q3</option>
+      <option value="Q4">Q4</option><option value="Q5">Q5</option>
+    </select>
+    <span id="benchSubjectWrap">
+      <label for="benchSubjectPick">Subjekt</label>
+      <select id="benchSubjectPick"></select>
+    </span>
+    <span id="benchPairWrap" style="display:none">
+      <label for="benchPairPick">Par</label>
+      <select id="benchPairPick"></select>
+    </span>
+    <label for="iterations">Broj mjerenja</label>
+    <input id="iterations" type="number" min="1" max="100" value="10" style="width:70px">
+    <button id="benchBtn">Pokreni mjerenje</button>
+  </div>
+  <div id="benchOut"></div>
+</div>
+
+<div class="card">
+  <h2>Slobodan unos upita</h2>
+  <div class="warn">
+    Ovaj alat je namjerno READ-ONLY, provedeno od strane baze same, ne samo provjerom teksta: Cypher se
+    izvršava kroz čitajuću transakciju (Neo4j sam odbija upise), MQL prihvaća samo <code>find</code> i
+    <code>aggregate</code> naredbe i odbija svaki pipeline koji sadrži <code>$out</code> ili <code>$merge</code>.
+    Servis nije izložen izvan localhosta.
+  </div>
+  <div class="row">
+    <label for="rawEngine">Jezik</label>
+    <select id="rawEngine">
+      <option value="cypher">Cypher (Neo4j)</option>
+      <option value="mql">MQL naredba (Mongo)</option>
+    </select>
+  </div>
+  <textarea id="rawText" placeholder="npr. MATCH (u:User) RETURN u.id LIMIT 5&#10;ili {&quot;find&quot;:&quot;users&quot;,&quot;filter&quot;:{},&quot;limit&quot;:5}"></textarea>
+  <div class="row" style="margin-top:8px"><button id="rawBtn">Izvrši</button></div>
+  <div id="rawOut" class="rawresult"></div>
+</div>
+
+<script>
+let subjects = [];
+let pairs = [];
+
+async function loadSubjects() {
+  const res = await fetch('/api/subjects');
+  const data = await res.json();
+  subjects = data.subjects;
+  pairs = data.pairs;
+
+  for (const sel of [document.getElementById('subjectPick'), document.getElementById('benchSubjectPick')]) {
+    sel.innerHTML = subjects.map(s => `<option value="${s}">${s}</option>`).join('');
+  }
+  for (const sel of [document.getElementById('pairPick'), document.getElementById('benchPairPick')]) {
+    sel.innerHTML = pairs.map(p => `<option value="${p.fromId}|${p.toId}">${p.fromId} → ${p.toId} (očekivano ${p.expectedLength})</option>`).join('');
+  }
+}
+
+function wireQ5Toggle(queryPickId, subjectWrapId, pairWrapId) {
+  document.getElementById(queryPickId).addEventListener('change', e => {
+    const isQ5 = e.target.value === 'Q5';
+    document.getElementById(subjectWrapId).style.display = isQ5 ? 'none' : '';
+    document.getElementById(pairWrapId).style.display = isQ5 ? '' : 'none';
+  });
+}
+wireQ5Toggle('queryPick', 'subjectPickWrap', 'pairPickWrap');
+wireQ5Toggle('benchQueryPick', 'benchSubjectWrap', 'benchPairWrap');
+
+function fmtMs(ms) { return ms.toFixed(2) + ' ms'; }
+
+function renderRows(rows) {
+  if (rows === null || rows === undefined) return '(nema rezultata)';
+  return JSON.stringify(rows, null, 2);
+}
+
+function renderVariant(v) {
+  return `
+    <div class="variant">
+      <h3>${v.name}</h3>
+      <div class="stat">Vrijeme: <b>${fmtMs(v.elapsedMs)}</b> · Redaka: <b>${v.rowCount}</b></div>
+      ${v.note ? `<div class="note">⚠ ${v.note}</div>` : ''}
+      <div class="stat">Izvršeni upit:</div>
+      <pre>${escapeHtml(v.queryText)}</pre>
+      <div class="stat">Rezultat:</div>
+      <pre>${escapeHtml(renderRows(v.rows))}</pre>
+    </div>`;
+}
+
+function escapeHtml(s) {
+  return String(s).replace(/[&<>]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
+}
+
+document.getElementById('runBtn').addEventListener('click', async () => {
+  const query = document.getElementById('queryPick').value;
+  const btn = document.getElementById('runBtn');
+  btn.disabled = true;
+  try {
+    let body;
+    if (query === 'Q5') {
+      const [fromId, toId] = document.getElementById('pairPick').value.split('|');
+      body = { query, fromId, toId };
+    } else {
+      body = { query, subject: document.getElementById('subjectPick').value };
+    }
+    const res = await fetch('/api/run', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(body) });
+    const data = await res.json();
+    if (!res.ok) {
+      document.getElementById('runMatchbar').innerHTML = `<div class="matchbar bad">Greška: ${escapeHtml(data.error || JSON.stringify(data))}</div>`;
+      document.getElementById('runCols').innerHTML = '';
+      return;
+    }
+    document.getElementById('runMatchbar').innerHTML = data.allMatch
+      ? `<div class="matchbar ok">✓ Sve tri varijante vraćaju semantički isti rezultat.</div>`
+      : `<div class="matchbar bad">✗ Rezultati se NE poklapaju — vidi konzolu servera za detalje.</div>`;
+    document.getElementById('runCols').innerHTML = data.variants.map(renderVariant).join('');
+  } finally {
+    btn.disabled = false;
+  }
+});
+
+document.getElementById('benchBtn').addEventListener('click', async () => {
+  const query = document.getElementById('benchQueryPick').value;
+  const iterations = parseInt(document.getElementById('iterations').value, 10) || 10;
+  const btn = document.getElementById('benchBtn');
+  btn.disabled = true;
+  document.getElementById('benchOut').innerHTML = '<p class="stat">Mjerim...</p>';
+  try {
+    let body = { query, iterations };
+    if (query === 'Q5') {
+      const [fromId, toId] = document.getElementById('benchPairPick').value.split('|');
+      body.fromId = fromId; body.toId = toId;
+    } else {
+      body.subject = document.getElementById('benchSubjectPick').value;
+    }
+    const res = await fetch('/api/bench', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(body) });
+    const data = await res.json();
+    const rowsHtml = data.variants.map(v => `<tr><td>${v.name}</td><td>${v.median.toFixed(2)}</td><td>${v.min.toFixed(2)}</td><td>${v.p95.toFixed(2)}</td><td>${v.max.toFixed(2)}</td></tr>`).join('');
+    document.getElementById('benchOut').innerHTML = `
+      <table class="benchtable">
+        <thead><tr><th>Varijanta</th><th>Medijan (ms)</th><th>Min (ms)</th><th>p95 (ms)</th><th>Max (ms)</th></tr></thead>
+        <tbody>${rowsHtml}</tbody>
+      </table>`;
+  } finally {
+    btn.disabled = false;
+  }
+});
+
+document.getElementById('rawBtn').addEventListener('click', async () => {
+  const engine = document.getElementById('rawEngine').value;
+  const text = document.getElementById('rawText').value;
+  const btn = document.getElementById('rawBtn');
+  btn.disabled = true;
+  document.getElementById('rawOut').innerHTML = '<p class="stat">Izvršavam...</p>';
+  try {
+    const res = await fetch('/api/raw', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ engine, text }) });
+    const data = await res.json();
+    if (!data.ok) {
+      document.getElementById('rawOut').innerHTML = `<p class="err">✗ ODBIJENO: ${escapeHtml(data.error)}</p>`;
+    } else {
+      document.getElementById('rawOut').innerHTML = `<p class="ok-text">✓ ${data.rowCount} redaka</p><pre>${escapeHtml(renderRows(data.rows))}</pre>`;
+    }
+  } finally {
+    btn.disabled = false;
+  }
+});
+
+loadSubjects();
+</script>
+</body>
+</html>
